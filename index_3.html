@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TCD & graphiques – Widget Grist</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#f7f8fa; --panel:#fff; --border:#dfe3e8; --text:#1f2933; --muted:#6b7785;
+    --accent:#16b378; --accent-soft:#e6f7f0; --chip:#eef1f4; --head:#f0f2f5; --sub:#f7f9fb; --tot:#e9edf2;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font:13px/1.35 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--text);background:var(--bg)}
+  #app{display:grid;grid-template-columns:220px 1fr;height:100%}
+  /* ---- liste des champs ---- */
+  #fieldsPanel{background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+  #fieldsPanel h3{margin:10px 10px 6px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+  #fieldSearch{margin:0 10px 6px;padding:5px 7px;border:1px solid var(--border);border-radius:4px}
+  #fieldList{overflow:auto;flex:1;padding:0 6px 10px}
+  .field{padding:4px 6px;border-radius:4px;cursor:grab;display:flex;gap:6px;align-items:center;user-select:none}
+  .field:hover{background:var(--chip)}
+  .field .k{font-size:10px;color:var(--muted);width:18px;text-align:center;flex:none}
+  .field .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .field.used .n{font-weight:600}
+  /* ---- zones ---- */
+  #main{display:flex;flex-direction:column;min-width:0;min-height:0}
+  #zones{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:8px;background:var(--panel);border-bottom:1px solid var(--border)}
+  .zone{border:1px dashed var(--border);border-radius:6px;min-height:58px;padding:4px;background:#fcfcfd}
+  .zone.over{border-color:var(--accent);background:var(--accent-soft)}
+  .zone .zt{font-size:11px;color:var(--muted);margin:0 2px 4px;text-transform:uppercase;letter-spacing:.04em}
+  .chip{display:flex;align-items:center;gap:4px;background:var(--chip);border-radius:4px;padding:3px 4px 3px 6px;margin:2px 0;cursor:grab}
+  .chip .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip select{font-size:11px;border:1px solid var(--border);border-radius:3px;background:#fff;max-width:96px}
+  .chip .x{border:0;background:none;cursor:pointer;color:var(--muted);font-size:14px;line-height:1;padding:0 2px}
+  .chip .x:hover{color:#c0392b}
+  .chip.filt{cursor:pointer}
+  .chip.filt.active{background:#fff4d6}
+  /* ---- barre d'outils ---- */
+  #toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--border);background:var(--panel)}
+  #toolbar label{display:flex;gap:4px;align-items:center;color:var(--muted)}
+  #toolbar select,#toolbar input[type=number]{border:1px solid var(--border);border-radius:4px;padding:2px 4px;background:#fff}
+  .btn{border:1px solid var(--border);background:#fff;border-radius:4px;padding:3px 8px;cursor:pointer}
+  .btn:hover{border-color:var(--accent)}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:4px;overflow:hidden}
+  .seg button{border:0;background:#fff;padding:3px 9px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#fff}
+  #info{margin-left:auto;color:var(--muted)}
+  /* ---- résultats ---- */
+  #results{flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:12px;min-height:0}
+  #chartBox{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;height:360px;flex:none;position:relative}
+  #tableBox{background:var(--panel);border:1px solid var(--border);border-radius:6px;overflow:auto;flex:none;max-height:none}
+  body.v-table #chartBox{display:none}
+  body.v-chart #tableBox{display:none}
+  body.v-chart #chartBox{height:calc(100vh - 230px);min-height:300px}
+  table.pv{border-collapse:collapse;font-variant-numeric:tabular-nums;width:max-content;min-width:100%}
+  table.pv th,table.pv td{border:1px solid var(--border);padding:3px 8px;white-space:nowrap}
+  table.pv thead th{background:var(--head);position:sticky;top:0;z-index:1;text-align:left}
+  table.pv thead tr:nth-child(2) th{top:24px}
+  table.pv td.num{text-align:right}
+  table.pv th.rh{background:#fff;font-weight:normal;text-align:left;vertical-align:top}
+  table.pv tr.subtotal td,table.pv tr.subtotal th{background:var(--sub);font-weight:600}
+  table.pv tr.grand td,table.pv tr.grand th{background:var(--tot);font-weight:700}
+  table.pv td.tc{background:#f9fafb;font-weight:600}
+  .empty{padding:30px;text-align:center;color:var(--muted)}
+  /* ---- popover filtre ---- */
+  #pop{position:fixed;z-index:10;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:0 6px 24px rgba(0,0,0,.15);width:260px;display:none;flex-direction:column;max-height:360px}
+  #pop .ph{padding:8px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px}
+  #pop .ph input{padding:4px 6px;border:1px solid var(--border);border-radius:4px}
+  #pop .pl{overflow:auto;padding:4px 8px;flex:1}
+  #pop .pl label{display:flex;gap:6px;align-items:center;padding:2px 0}
+  #pop .pf{padding:8px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:6px}
+  #standalone{padding:20px;display:none}
+  @media (max-width:760px){#app{grid-template-columns:1fr}#fieldsPanel{max-height:160px}#zones{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body class="v-both">
+<div id="app">
+  <aside id="fieldsPanel">
+    <h3>Champs</h3>
+    <input id="fieldSearch" placeholder="Rechercher un champ…">
+    <div id="fieldList"></div>
+  </aside>
+  <section id="main">
+    <div id="zones">
+      <div class="zone" data-zone="filters"><div class="zt">Filtres</div></div>
+      <div class="zone" data-zone="cols"><div class="zt">Colonnes</div></div>
+      <div class="zone" data-zone="rows"><div class="zt">Lignes</div></div>
+      <div class="zone" data-zone="values"><div class="zt">Valeurs</div></div>
+    </div>
+    <div id="toolbar">
+      <span class="seg" id="viewSeg">
+        <button data-v="both" class="on">Tableau + graphique</button><button data-v="table">Tableau</button><button data-v="chart">Graphique</button>
+      </span>
+      <label>Tri <select id="sortSel"><option value="label">Libellé</option><option value="valueDesc">Valeur ↓</option><option value="valueAsc">Valeur ↑</option></select></label>
+      <label><input type="checkbox" id="subChk"> Sous-totaux</label>
+      <label>Graphique <select id="chartSel">
+        <option value="bar">Barres</option><option value="stacked">Barres empilées</option><option value="hbar">Barres horizontales</option>
+        <option value="line">Courbes</option><option value="pie">Secteurs</option><option value="doughnut">Anneau</option></select></label>
+      <label>Top <input type="number" id="topN" min="1" max="200" style="width:56px"></label>
+      <button class="btn" id="copyBtn" title="Copier le tableau pour le coller dans Excel">Copier</button>
+      <button class="btn" id="csvBtn">Export CSV</button>
+      <button class="btn" id="resetBtn">Réinitialiser</button>
+      <span id="info"></span>
+    </div>
+    <div id="results">
+      <div id="chartBox"><canvas id="chart"></canvas></div>
+      <div id="tableBox"></div>
+    </div>
+    <div id="standalone">
+      <p><b>Mode hors Grist.</b> Chargez un fichier CSV (séparateur ; ou ,) pour tester le widget.</p>
+      <input type="file" id="csvFile" accept=".csv,.txt">
+    </div>
+  </section>
+</div>
+<div id="pop">
+  <div class="ph"><b id="popTitle"></b><input id="popSearch" placeholder="Rechercher…">
+    <div><button class="btn" id="popAll">Tout</button> <button class="btn" id="popNone">Aucun</button></div></div>
+  <div class="pl" id="popList"></div>
+  <div class="pf"><button class="btn" id="popCancel">Annuler</button><button class="btn" id="popOk" style="background:var(--accent);color:#fff;border-color:var(--accent)">OK</button></div>
+</div>
+
+<script>
+(function(){
+"use strict";
+/* ================= État ================= */
+const DEFAULT_CFG = {rows:[], cols:[], values:[], filters:[], sort:'label', subtotals:false, chart:'bar', topN:20, view:'both'};
+let cfg = JSON.parse(JSON.stringify(DEFAULT_CFG));
+let records = [];
+let fields = [];            // [{name, kind:'date'|'number'|'text'}]
+let fieldKind = {};
+let chart = null;
+let lastPivot = null;
+const inGrist = window.self !== window.top && typeof grist !== 'undefined';
+
+const AGG = {count:'Nombre', countd:'Nb distinct', sum:'Somme', avg:'Moyenne', min:'Min', max:'Max'};
+const GRAN = {raw:'Valeur', day:'Jour', month:'Mois', quarter:'Trimestre', year:'Année'};
+const MONTHS = ['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
+const PALETTE = ['#2a7ab0','#e8833a','#3fa36b','#c94c4c','#8a63b8','#8c6d4f','#d36fae','#6f7b86','#b5b335','#2bb3c0','#1f4e79','#f2b134'];
+const nf = new Intl.NumberFormat('fr-FR',{maximumFractionDigits:2});
+const EMPTY = '(vide)';
+const SEP = '\u0001';
+
+/* ================= Types & valeurs ================= */
+const reDMY = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/;
+const reISO = /^(\d{4})-(\d{2})-(\d{2})/;
+function toDate(v, name){
+  if (v == null || v === '') return null;
+  if (v instanceof Date) return isNaN(v) ? null : v;
+  if (typeof v === 'number'){                       // Grist Date/DateTime = secondes epoch
+    if (/date/i.test(name||'') || fieldKind[name] === 'date') return new Date(v*1000);
+    return null;
+  }
+  const s = String(v).trim(); let m;
+  if ((m = reDMY.exec(s))) return new Date(Date.UTC(+m[3], +m[2]-1, +m[1]));
+  if ((m = reISO.exec(s))) return new Date(Date.UTC(+m[1], +m[2]-1, +m[3]));
+  return null;
+}
+function toNum(v){
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  const s = String(v).replace(/\s| /g,'').replace(',', '.');
+  if (!/^-?\d+(\.\d+)?$/.test(s)) return null;
+  return parseFloat(s);
+}
+function detectFields(){
+  const keys = new Set();
+  for (let i=0;i<Math.min(records.length,200);i++) Object.keys(records[i]).forEach(k=>keys.add(k));
+  const out = [];
+  for (const k of keys){
+    if (k === 'id' || k === 'manualSort' || k.startsWith('gristHelper_')) continue;
+    let n=0, dates=0, nums=0;
+    for (let i=0;i<records.length && n<400;i++){
+      const v = records[i][k];
+      if (v == null || v === '') continue;
+      n++;
+      if (v instanceof Date || (typeof v==='string' && (reDMY.test(v)||reISO.test(v)))) dates++;
+      else if (typeof v==='number' && /date/i.test(k) && v>1e8 && v<5e9) dates++;
+      else if (toNum(v) !== null) nums++;
+    }
+    let kind = 'text';
+    if (n && dates/n >= .8) kind = 'date';
+    else if (n && nums/n >= .9 && !/^(numero|matricule|commande|reservation|id)/i.test(k)) kind = 'number';
+    out.push({name:k, kind});
+  }
+  fields = out; fieldKind = {}; out.forEach(f=>fieldKind[f.name]=f.kind);
+}
+function pad(n){return n<10?'0'+n:''+n}
+function dimValue(rec, d){
+  const v = rec[d.field];
+  if (fieldKind[d.field] === 'date'){
+    const dt = toDate(v, d.field);
+    if (!dt) return EMPTY;
+    const y = dt.getUTCFullYear(), m = dt.getUTCMonth()+1;
+    switch (d.gran || 'month'){
+      case 'year': return ''+y;
+      case 'quarter': return y+'-T'+Math.ceil(m/3);
+      case 'month': return y+'-'+pad(m);
+      case 'day': default: return y+'-'+pad(m)+'-'+pad(dt.getUTCDate());
+    }
+  }
+  if (v == null || v === '') return EMPTY;
+  if (Array.isArray(v)) return v.length ? v.join(', ') : EMPTY;   // listes Grist
+  return String(v);
+}
+function displayKey(k, d){
+  if (!d || fieldKind[d.field] !== 'date' || k === EMPTY) return k;
+  const g = d.gran || 'month';
+  if (g === 'month'){ const [y,m] = k.split('-'); return MONTHS[+m-1]+' '+y; }
+  if (g === 'day'){ const [y,m,dd] = k.split('-'); return dd+'/'+m+'/'+y; }
+  return k;
+}
+const collator = new Intl.Collator('fr',{numeric:true,sensitivity:'base'});
+function cmpKey(a,b){ if (a===EMPTY) return 1; if (b===EMPTY) return -1; return collator.compare(a,b); }
+
+/* ================= Agrégation ================= */
+function newAcc(){ return {n:0, cnt:0, sum:0, min:Infinity, max:-Infinity, set:null}; }
+function addAcc(acc, rec, meas){
+  acc.n++;
+  const v = rec[meas.field];
+  if (meas.agg === 'count'){ if (v!=null && v!=='') acc.cnt++; return; }
+  if (meas.agg === 'countd'){ if (v!=null && v!=='') (acc.set || (acc.set=new Set())).add(String(v)); return; }
+  const x = toNum(v); if (x === null) return;
+  acc.cnt++; acc.sum += x; if (x<acc.min) acc.min=x; if (x>acc.max) acc.max=x;
+}
+function accValue(acc, meas){
+  if (!acc) return null;
+  switch (meas.agg){
+    case 'count': return meas.field === '*' ? acc.n : acc.cnt;
+    case 'countd': return acc.set ? acc.set.size : 0;
+    case 'sum': return acc.cnt ? acc.sum : 0;
+    case 'avg': return acc.cnt ? acc.sum/acc.cnt : null;
+    case 'min': return acc.cnt ? acc.min : null;
+    case 'max': return acc.cnt ? acc.max : null;
+  }
+}
+function measures(){ return cfg.values.length ? cfg.values : [{field:'*', agg:'count'}]; }
+function measLabel(m){ return m.field === '*' ? 'Nombre de lignes' : AGG[m.agg]+' de '+m.field; }
+
+/* ================= Filtres ================= */
+function passFilters(rec){
+  for (const f of cfg.filters){
+    if (!f.excluded || !f.excluded.length) continue;
+    if (f._ex === undefined || f._exSrc !== f.excluded){ f._ex = new Set(f.excluded); f._exSrc = f.excluded; }
+    if (f._ex.has(dimValue(rec, f))) return false;
+  }
+  return true;
+}
+
+/* ================= Calcul du TCD ================= */
+function computePivot(){
+  const R = cfg.rows, C = cfg.cols, M = measures();
+  const acc = new Map();   // clé "préfixeLigne \u0002 colonne|*" -> [acc par mesure]
+  const colSet = new Set();
+  const rowLeaves = new Map();
+  let nRec = 0;
+  const get = (k)=>{ let a = acc.get(k); if (!a){ a = M.map(newAcc); acc.set(k,a);} return a; };
+  for (const rec of records){
+    if (!passFilters(rec)) continue;
+    nRec++;
+    const rk = R.map(d=>dimValue(rec,d));
+    const ck = C.length ? C.map(d=>dimValue(rec,d)).join(' / ') : null;
+    if (ck !== null) colSet.add(ck);
+    rowLeaves.set(rk.join(SEP), rk);
+    for (let l=0; l<=rk.length; l++){
+      const pre = rk.slice(0,l).join(SEP);
+      const targets = ck !== null ? [pre+'\u0002'+ck, pre+'\u0002*'] : [pre+'\u0002*'];
+      for (const t of targets){ const a = get(t); M.forEach((m,i)=>addAcc(a[i],rec,m)); }
+    }
+  }
+  const val = (rowPre, col, mi)=>{ const a = acc.get(rowPre+'\u0002'+col); return a ? accValue(a[mi], M[mi]) : null; };
+  // ordre des colonnes
+  let cols = [...colSet];
+  if (cfg.sort === 'label' || !C.length) cols.sort(cmpKey);
+  else cols.sort((a,b)=> (cfg.sort==='valueAsc'?1:-1)*((val('',a,0)||0)-(val('',b,0)||0)));
+  // arbre des lignes
+  const root = {key:'', path:[], children:new Map()};
+  for (const rk of rowLeaves.values()){
+    let node = root;
+    rk.forEach((k,i)=>{
+      if (!node.children.has(k)) node.children.set(k,{key:k, path:rk.slice(0,i+1), children:new Map()});
+      node = node.children.get(k);
+    });
+  }
+  const sortChildren = (node)=>{
+    const arr = [...node.children.values()];
+    if (cfg.sort === 'label') arr.sort((a,b)=>cmpKey(a.key,b.key));
+    else { const s = cfg.sort==='valueAsc'?1:-1;
+      arr.sort((a,b)=> s*((val(a.path.join(SEP),'*',0)||0)-(val(b.path.join(SEP),'*',0)||0)) || cmpKey(a.key,b.key)); }
+    node.sorted = arr; arr.forEach(sortChildren);
+  };
+  sortChildren(root);
+  return {R, C, M, cols, root, val, nRec};
+}
+
+/* ================= Rendu du tableau ================= */
+const MAX_ROWS = 3000;
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmt(v){ return v == null ? '' : nf.format(v); }
+
+function buildRows(p){
+  // renvoie une liste de lignes logiques : {type:'leaf'|'sub'|'grand', path, labels[]}
+  const out = [];
+  const walk = (node, depth)=>{
+    if (depth === p.R.length){ out.push({type:'leaf', path:node.path}); return; }
+    for (const ch of node.sorted){
+      walk(ch, depth+1);
+      if (cfg.subtotals && depth+1 < p.R.length && p.R.length > 1) out.push({type:'sub', path:ch.path});
+    }
+  };
+  if (p.R.length) walk(p.root, 0);
+  out.push({type:'grand', path:[]});
+  return out;
+}
+function renderTable(p){
+  const box = document.getElementById('tableBox');
+  if (!records.length){ box.innerHTML = '<div class="empty">Aucune donnée.</div>'; return; }
+  const rows = buildRows(p);
+  const colKeys = p.C.length ? [...p.cols, '*'] : ['*'];
+  const multiM = p.M.length > 1;
+  let h = '<table class="pv"><thead><tr>';
+  const nHeadRows = p.C.length && multiM ? 2 : 1;
+  const rowHeads = p.R.length ? p.R : [{field:''}];
+  rowHeads.forEach(d=>{ h += `<th rowspan="${nHeadRows}">${esc(d.field ? d.field+(fieldKind[d.field]==='date'?' ('+GRAN[d.gran||'month'].toLowerCase()+')':'') : '')}</th>`; });
+  if (p.C.length){
+    colKeys.forEach(ck=>{
+      const lab = ck==='*' ? 'Total' : displayKey(ck, p.C.length===1?p.C[0]:null);
+      h += `<th colspan="${p.M.length}" style="text-align:center">${esc(lab)}</th>`;
+    });
+    h += '</tr>';
+    if (multiM){ h += '<tr>'; colKeys.forEach(()=>p.M.forEach(m=>{ h += `<th>${esc(measLabel(m))}</th>`; })); h += '</tr>'; }
+  } else {
+    p.M.forEach(m=>{ h += `<th>${esc(measLabel(m))}</th>`; }); h += '</tr>';
+  }
+  h += '</thead><tbody>';
+  let prev = [];
+  let count = 0;
+  for (const r of rows){
+    if (count++ > MAX_ROWS && r.type !== 'grand') continue;
+    const pre = r.path.join(SEP);
+    const cls = r.type==='sub' ? 'subtotal' : r.type==='grand' ? 'grand' : '';
+    h += `<tr class="${cls}">`;
+    if (r.type === 'grand'){
+      h += `<th colspan="${rowHeads.length}">Total général</th>`;
+    } else if (r.type === 'sub'){
+      h += `<th class="rh" colspan="${rowHeads.length}">Total ${esc(displayKey(r.path[r.path.length-1], p.R[r.path.length-1]))}</th>`;
+      prev = [];
+    } else {
+      p.R.forEach((d,i)=>{
+        const same = prev.length && r.path.slice(0,i+1).join(SEP) === prev.slice(0,i+1).join(SEP);
+        h += `<th class="rh">${same ? '' : esc(displayKey(r.path[i], d))}</th>`;
+      });
+      prev = r.path;
+    }
+    colKeys.forEach(ck=>p.M.forEach((m,mi)=>{
+      const v = p.val(pre, ck, mi);
+      h += `<td class="num${ck==='*'&&p.C.length?' tc':''}">${fmt(v)}</td>`;
+    }));
+    h += '</tr>';
+  }
+  h += '</tbody></table>';
+  if (rows.length > MAX_ROWS) h += `<div class="empty">Affichage limité à ${MAX_ROWS} lignes sur ${rows.length}. Ajoutez un filtre ou réduisez le niveau de détail.</div>`;
+  box.innerHTML = h;
+}
+
+/* ================= Graphique ================= */
+function renderChart(p){
+  if (cfg.view === 'table' || typeof Chart === 'undefined') return;
+  const canvas = document.getElementById('chart');
+  if (chart){ chart.destroy(); chart = null; }
+  if (!records.length) return;
+  const topN = Math.max(1, +cfg.topN || 20);
+  // libellés = lignes feuilles (ou total si pas de lignes)
+  let leaves = [];
+  const walk = (node, depth)=>{ if (depth===p.R.length){ leaves.push(node.path); return; } node.sorted.forEach(ch=>walk(ch,depth+1)); };
+  if (p.R.length) walk(p.root,0); else leaves = [[]];
+  const isTime = p.R.length===1 && fieldKind[p.R[0].field]==='date';
+  if (leaves.length > topN){
+    if (isTime) leaves = leaves.slice(-topN);
+    else leaves = [...leaves].sort((a,b)=>(p.val(b.join(SEP),'*',0)||0)-(p.val(a.join(SEP),'*',0)||0)).slice(0,topN)
+                 .sort((a,b)=>cfg.sort==='label'? cmpKey(a.join(SEP),b.join(SEP)) : (cfg.sort==='valueAsc'?1:-1)*((p.val(a.join(SEP),'*',0)||0)-(p.val(b.join(SEP),'*',0)||0)));
+  }
+  const labels = leaves.map(path=>path.length ? path.map((k,i)=>displayKey(k,p.R[i])).join(' / ') : 'Total');
+  let datasets;
+  const type = cfg.chart;
+  const pie = type==='pie' || type==='doughnut';
+  if (p.C.length && !pie){
+    let cols = p.cols;
+    if (cols.length > 12) cols = [...cols].sort((a,b)=>(p.val('',b,0)||0)-(p.val('',a,0)||0)).slice(0,12);
+    datasets = cols.map((ck,i)=>({label: displayKey(ck, p.C.length===1?p.C[0]:null),
+      data: leaves.map(path=>p.val(path.join(SEP),ck,0)), backgroundColor:PALETTE[i%PALETTE.length], borderColor:PALETTE[i%PALETTE.length]}));
+  } else {
+    const ms = pie ? [p.M[0]] : p.M;
+    datasets = ms.map((m,i)=>({label: measLabel(m), data: leaves.map(path=>p.val(path.join(SEP),'*',p.M.indexOf(m))),
+      backgroundColor: pie ? leaves.map((_,j)=>PALETTE[j%PALETTE.length]) : PALETTE[i%PALETTE.length],
+      borderColor: pie ? '#fff' : PALETTE[i%PALETTE.length]}));
+  }
+  if (type==='line') datasets.forEach(d=>{ d.fill=false; d.tension=.2; d.pointRadius=3; });
+  const cjsType = type==='stacked'||type==='hbar' ? 'bar' : type;
+  const stacked = type==='stacked';
+  chart = new Chart(canvas, {
+    type: cjsType,
+    data: {labels, datasets},
+    options: {
+      responsive:true, maintainAspectRatio:false, animation:false,
+      indexAxis: type==='hbar' ? 'y' : 'x',
+      plugins:{
+        legend:{display: datasets.length>1 || pie, position: pie?'right':'top'},
+        title:{display:true, text: (p.C.length && !pie ? measLabel(p.M[0])+' par '+p.C.map(d=>d.field).join(' / ') : measLabel(p.M[0])) + (p.R.length?' — '+p.R.map(d=>d.field).join(' / '):'')},
+        tooltip:{callbacks:{label:(c)=>`${c.dataset.label}: ${fmt(c.parsed && typeof c.parsed==='object' ? (type==='hbar'?c.parsed.x:c.parsed.y) : c.parsed)}`}}
+      },
+      scales: pie ? {} : {
+        x:{stacked, ticks:{autoSkip:true, maxRotation:60}},
+        y:{stacked, beginAtZero:true, ticks:{callback:(v)=>typeof v==='number'?nf.format(v):v}}
+      }
+    }
+  });
+  if (type==='hbar'){ chart.options.scales.x.ticks.callback=(v)=>nf.format(v); chart.options.scales.y.ticks.callback=function(v){return this.getLabelForValue(v);}; chart.update(); }
+}
+
+/* ================= Rendu général ================= */
+function render(){
+  const t0 = performance.now();
+  const p = computePivot(); lastPivot = p;
+  renderZones(); renderFieldList();
+  renderTable(p); renderChart(p);
+  document.getElementById('info').textContent =
+    `${nf.format(p.nRec)} ligne(s) sur ${nf.format(records.length)} · ${Math.round(performance.now()-t0)} ms`;
+}
+let saveTimer = null;
+function changed(){ render(); clearTimeout(saveTimer); saveTimer = setTimeout(saveCfg, 400); }
+
+/* ================= Zones & glisser-déposer ================= */
+function chipHtml(zone, item, idx){
+  const k = fieldKind[item.field];
+  let extra = '';
+  if ((zone==='rows'||zone==='cols'||zone==='filters') && k==='date'){
+    extra = `<select data-act="gran">${Object.entries(GRAN).filter(([g])=>g!=='raw').map(([g,l])=>`<option value="${g}" ${ (item.gran||'month')===g?'selected':''}>${l}</option>`).join('')}</select>`;
+  }
+  if (zone==='values'){
+    const opts = k==='number' ? Object.keys(AGG) : ['count','countd'];
+    extra = `<select data-act="agg">${opts.map(a=>`<option value="${a}" ${item.agg===a?'selected':''}>${AGG[a]}</option>`).join('')}</select>`;
+  }
+  const active = zone==='filters' && item.excluded && item.excluded.length;
+  return `<div class="chip ${zone==='filters'?'filt':''} ${active?'active':''}" draggable="true" data-zone="${zone}" data-idx="${idx}" title="${zone==='filters'?'Cliquer pour choisir les valeurs':''}">
+    <span class="n">${esc(item.field)}${active?' ('+item.excluded.length+' exclue'+(item.excluded.length>1?'s':'')+')':''}</span>${extra}<button class="x" data-act="rm" title="Retirer">×</button></div>`;
+}
+function renderZones(){
+  document.querySelectorAll('.zone').forEach(z=>{
+    const zone = z.dataset.zone;
+    z.querySelectorAll('.chip').forEach(c=>c.remove());
+    z.insertAdjacentHTML('beforeend', cfg[zone].map((it,i)=>chipHtml(zone,it,i)).join(''));
+  });
+}
+function renderFieldList(){
+  const q = document.getElementById('fieldSearch').value.trim().toLowerCase();
+  const used = new Set([...cfg.rows,...cfg.cols,...cfg.values,...cfg.filters].map(x=>x.field));
+  const icon = {date:'📅', number:'#', text:'Aa'};
+  document.getElementById('fieldList').innerHTML = fields.filter(f=>!q||f.name.toLowerCase().includes(q)).map(f=>
+    `<div class="field ${used.has(f.name)?'used':''}" draggable="true" data-field="${esc(f.name)}" title="Glisser vers une zone · double-clic = Lignes"><span class="k">${icon[f.kind]}</span><span class="n">${esc(f.name)}</span></div>`).join('')
+    || '<div class="empty">Aucun champ</div>';
+}
+function newItem(zone, field){
+  const k = fieldKind[field];
+  if (zone==='values') return {field, agg: k==='number' ? 'sum' : 'count'};
+  const it = {field}; if (k==='date') it.gran = 'month';
+  if (zone==='filters') it.excluded = [];
+  return it;
+}
+let drag = null;
+document.addEventListener('dragstart', e=>{
+  const f = e.target.closest && e.target.closest('.field');
+  const c = e.target.closest && e.target.closest('.chip');
+  if (f) drag = {field: f.dataset.field};
+  else if (c) drag = {from: c.dataset.zone, idx: +c.dataset.idx};
+  else return;
+  e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain','x');
+});
+document.querySelectorAll('.zone').forEach(z=>{
+  z.addEventListener('dragover', e=>{ if (drag){ e.preventDefault(); z.classList.add('over'); } });
+  z.addEventListener('dragleave', ()=>z.classList.remove('over'));
+  z.addEventListener('drop', e=>{
+    e.preventDefault(); z.classList.remove('over'); if (!drag) return;
+    const zone = z.dataset.zone;
+    // position d'insertion selon le chip survolé
+    const over = e.target.closest('.chip'); let pos = cfg[zone].length;
+    if (over && over.dataset.zone===zone) pos = +over.dataset.idx;
+    let item;
+    if (drag.field) item = newItem(zone, drag.field);
+    else {
+      const src = cfg[drag.from][drag.idx];
+      cfg[drag.from].splice(drag.idx,1);
+      if (drag.from===zone && drag.idx < pos) pos--;
+      item = drag.from===zone ? src : newItem(zone, src.field);
+      if (drag.from!==zone && src.gran && zone!=='values') item.gran = src.gran;
+    }
+    // un champ n'apparaît qu'une fois dans Lignes/Colonnes
+    if (zone==='rows'||zone==='cols'){
+      ['rows','cols'].forEach(zz=>{ cfg[zz] = cfg[zz].filter((x,i)=>!(x.field===item.field && !(zz===zone && x===item))); });
+      pos = Math.min(pos, cfg[zone].length);
+    }
+    cfg[zone].splice(pos,0,item);
+    drag = null; changed();
+  });
+});
+document.addEventListener('dragend', ()=>{ drag=null; document.querySelectorAll('.zone.over').forEach(z=>z.classList.remove('over')); });
+document.getElementById('fieldList').addEventListener('dblclick', e=>{
+  const f = e.target.closest('.field'); if (!f) return;
+  const field = f.dataset.field;
+  if (fieldKind[field]==='number') cfg.values.push(newItem('values',field));
+  else if (!cfg.rows.some(x=>x.field===field)){ cfg.cols = cfg.cols.filter(x=>x.field!==field); cfg.rows.push(newItem('rows',field)); }
+  changed();
+});
+document.getElementById('fieldSearch').addEventListener('input', renderFieldList);
+document.getElementById('zones').addEventListener('change', e=>{
+  const c = e.target.closest('.chip'); if (!c) return;
+  const it = cfg[c.dataset.zone][+c.dataset.idx];
+  if (e.target.dataset.act==='gran'){ it.gran = e.target.value; if (it.excluded) it.excluded = []; }
+  if (e.target.dataset.act==='agg') it.agg = e.target.value;
+  changed();
+});
+document.getElementById('zones').addEventListener('click', e=>{
+  const c = e.target.closest('.chip'); if (!c) return;
+  if (e.target.dataset.act==='rm'){ cfg[c.dataset.zone].splice(+c.dataset.idx,1); changed(); return; }
+  if (e.target.tagName==='SELECT') return;
+  if (c.dataset.zone==='filters') openFilter(+c.dataset.idx, c);
+});
+
+/* ================= Popover de filtre ================= */
+let popIdx = -1, popVals = [], popEx = null;
+function openFilter(idx, anchor){
+  const f = cfg.filters[idx]; popIdx = idx;
+  const counts = new Map();
+  for (const r of records){ const k = dimValue(r,f); counts.set(k,(counts.get(k)||0)+1); }
+  popVals = [...counts.entries()].sort((a,b)=>cmpKey(a[0],b[0]));
+  popEx = new Set(f.excluded||[]);
+  document.getElementById('popTitle').textContent = f.field;
+  document.getElementById('popSearch').value = '';
+  drawPop();
+  const pop = document.getElementById('pop'); const rc = anchor.getBoundingClientRect();
+  pop.style.display = 'flex';
+  pop.style.left = Math.min(rc.left, window.innerWidth-270)+'px';
+  pop.style.top = Math.min(rc.bottom+4, window.innerHeight-370)+'px';
+}
+function drawPop(){
+  const q = document.getElementById('popSearch').value.trim().toLowerCase();
+  const f = cfg.filters[popIdx];
+  const list = popVals.filter(([k])=>!q || displayKey(k,f).toLowerCase().includes(q)).slice(0,1000);
+  document.getElementById('popList').innerHTML = list.map(([k,n])=>
+    `<label><input type="checkbox" data-k="${esc(k)}" ${popEx.has(k)?'':'checked'}> ${esc(displayKey(k,f))} <span style="color:var(--muted)">(${n})</span></label>`).join('')
+    + (popVals.length>1000?'<div class="empty">1000 premières valeurs affichées — utilisez la recherche.</div>':'');
+}
+document.getElementById('popSearch').addEventListener('input', drawPop);
+document.getElementById('popList').addEventListener('change', e=>{ const k=e.target.dataset.k; if (e.target.checked) popEx.delete(k); else popEx.add(k); });
+function visiblePopKeys(){ return [...document.querySelectorAll('#popList input')].map(i=>i.dataset.k); }
+document.getElementById('popAll').onclick = ()=>{ visiblePopKeys().forEach(k=>popEx.delete(k)); drawPop(); };
+document.getElementById('popNone').onclick = ()=>{ visiblePopKeys().forEach(k=>popEx.add(k)); drawPop(); };
+function closePop(){ document.getElementById('pop').style.display='none'; popIdx=-1; }
+document.getElementById('popCancel').onclick = closePop;
+document.getElementById('popOk').onclick = ()=>{ cfg.filters[popIdx].excluded = [...popEx]; closePop(); changed(); };
+document.addEventListener('mousedown', e=>{ if (popIdx>=0 && !e.target.closest('#pop') && !e.target.closest('.chip.filt')) closePop(); });
+
+/* ================= Barre d'outils ================= */
+function syncToolbar(){
+  document.getElementById('sortSel').value = cfg.sort;
+  document.getElementById('subChk').checked = !!cfg.subtotals;
+  document.getElementById('chartSel').value = cfg.chart;
+  document.getElementById('topN').value = cfg.topN;
+  document.body.className = 'v-'+cfg.view;
+  document.querySelectorAll('#viewSeg button').forEach(b=>b.classList.toggle('on', b.dataset.v===cfg.view));
+}
+document.getElementById('sortSel').onchange = e=>{ cfg.sort = e.target.value; changed(); };
+document.getElementById('subChk').onchange = e=>{ cfg.subtotals = e.target.checked; changed(); };
+document.getElementById('chartSel').onchange = e=>{ cfg.chart = e.target.value; changed(); };
+document.getElementById('topN').onchange = e=>{ cfg.topN = Math.max(1, +e.target.value||20); changed(); };
+document.getElementById('viewSeg').onclick = e=>{ const v = e.target.dataset.v; if (!v) return; cfg.view = v; syncToolbar(); changed(); };
+document.getElementById('resetBtn').onclick = ()=>{ cfg = JSON.parse(JSON.stringify(DEFAULT_CFG)); syncToolbar(); changed(); };
+
+function pivotMatrix(){
+  const p = lastPivot; if (!p) return [];
+  const colKeys = p.C.length ? [...p.cols,'*'] : ['*'];
+  const head = (p.R.length ? p.R.map(d=>d.field) : ['']);
+  const hdr = [...head];
+  colKeys.forEach(ck=>p.M.forEach(m=>hdr.push((p.C.length ? (ck==='*'?'Total':displayKey(ck,p.C.length===1?p.C[0]:null))+(p.M.length>1?' – ':'') : '') + (p.C.length && p.M.length===1 ? '' : measLabel(m)))));
+  const out = [hdr];
+  for (const r of buildRows(p)){
+    const lab = r.type==='grand' ? ['Total général', ...head.slice(1).map(()=> '')]
+              : r.type==='sub' ? ['Total '+displayKey(r.path[r.path.length-1], p.R[r.path.length-1]), ...head.slice(1).map(()=> '')]
+              : r.path.map((k,i)=>displayKey(k,p.R[i]));
+    const line = [...lab];
+    colKeys.forEach(ck=>p.M.forEach((m,mi)=>{ const v = p.val(r.path.join(SEP),ck,mi); line.push(v==null?'':v); }));
+    out.push(line);
+  }
+  return out;
+}
+function numFr(v){ return typeof v==='number' ? String(Math.round(v*100)/100).replace('.',',') : v; }
+document.getElementById('copyBtn').onclick = async ()=>{
+  const tsv = pivotMatrix().map(r=>r.map(c=>String(numFr(c)).replace(/\t|\n/g,' ')).join('\t')).join('\n');
+  try { await navigator.clipboard.writeText(tsv); }
+  catch(_) { const ta = document.createElement('textarea'); ta.value = tsv; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  flash('Tableau copié — collez-le dans Excel.');
+};
+document.getElementById('csvBtn').onclick = ()=>{
+  const csv = pivotMatrix().map(r=>r.map(c=>{ const s = String(numFr(c)); return /[;"\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; }).join(';')).join('\r\n');
+  const blob = new Blob(['﻿'+csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'tcd.csv';
+  document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+};
+function flash(msg){ const i = document.getElementById('info'); const old = i.textContent; i.textContent = msg; setTimeout(()=>{ if (i.textContent===msg) i.textContent = old; }, 2500); }
+
+/* ================= Persistance de la configuration ================= */
+function cleanCfg(){ return JSON.parse(JSON.stringify(cfg, (k,v)=> k.startsWith('_') ? undefined : v)); }
+function saveCfg(){
+  const c = cleanCfg();
+  if (inGrist){ try { const r = grist.setOptions(c); if (r && r.catch) r.catch(()=>{}); } catch(_){} }
+  try { localStorage.setItem('grist-tcd-cfg', JSON.stringify(c)); } catch(_){}
+}
+function loadCfg(obj){
+  if (!obj || typeof obj!=='object') return false;
+  cfg = Object.assign(JSON.parse(JSON.stringify(DEFAULT_CFG)), obj);
+  ['rows','cols','values','filters'].forEach(z=>{ if (!Array.isArray(cfg[z])) cfg[z]=[]; });
+  return true;
+}
+function pruneCfg(){   // retire les champs qui n'existent plus dans la table
+  const ok = new Set(fields.map(f=>f.name));
+  ['rows','cols','values','filters'].forEach(z=>{ cfg[z] = cfg[z].filter(x=>x.field==='*'||ok.has(x.field)); });
+}
+
+/* ================= Sources de données ================= */
+function setRecords(recs){
+  records = recs || [];
+  if (records.length) document.getElementById('standalone').style.display = 'none';
+  detectFields(); pruneCfg(); syncToolbar(); render();
+}
+window.tcdLoadRecords = setRecords;   // utile pour les tests
+
+if (inGrist){
+  grist.ready({requiredAccess:'read table', allowSelectBy:false});
+  let optsReceived = false;
+  grist.onOptions(opts=>{
+    if (opts && Object.keys(opts).length){ loadCfg(opts); }
+    else if (!optsReceived){ try { loadCfg(JSON.parse(localStorage.getItem('grist-tcd-cfg'))); } catch(_){} }
+    optsReceived = true;
+    if (records.length){ pruneCfg(); syncToolbar(); render(); }
+  });
+  grist.onRecords(recs=>setRecords(recs));
+} else {
+  try { loadCfg(JSON.parse(localStorage.getItem('grist-tcd-cfg'))); } catch(_){}
+  document.getElementById('standalone').style.display = 'block';
+  document.getElementById('csvFile').addEventListener('change', async e=>{
+    const file = e.target.files[0]; if (!file) return;
+    setRecords(parseCSV(await file.text()));
+  });
+  syncToolbar(); render();
+}
+function parseCSV(text){
+  text = text.replace(/^﻿/,'');
+  const first = text.split(/\r?\n/,1)[0];
+  const sep = (first.match(/;/g)||[]).length >= (first.match(/,/g)||[]).length ? ';' : ',';
+  const rows = []; let row = [], cur = '', q = false;
+  for (let i=0;i<text.length;i++){
+    const c = text[i];
+    if (q){ if (c==='"'){ if (text[i+1]==='"'){ cur+='"'; i++; } else q=false; } else cur+=c; }
+    else if (c==='"') q = true;
+    else if (c===sep){ row.push(cur); cur=''; }
+    else if (c==='\n' || c==='\r'){ if (c==='\r' && text[i+1]==='\n') i++; row.push(cur); rows.push(row); row=[]; cur=''; }
+    else cur += c;
+  }
+  if (cur!=='' || row.length){ row.push(cur); rows.push(row); }
+  const head = rows.shift() || [];
+  return rows.filter(r=>r.length>1 || r[0]!=='').map(r=>{ const o={}; head.forEach((h,i)=>o[h]=r[i]); return o; });
+}
+})();
+</script>
+</body>
+</html>
