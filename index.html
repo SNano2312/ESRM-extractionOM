@@ -49,7 +49,19 @@
   #info{margin-left:auto;color:var(--muted)}
   /* ---- résultats ---- */
   #results{flex:1;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:12px;min-height:0}
-  #chartBox{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;height:360px;flex:none;position:relative}
+  #chartBox{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;height:400px;flex:none;display:flex;flex-direction:column}
+  #chartWrap{position:relative;flex:1;min-height:0}
+  #crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:0 2px 6px;border-bottom:1px solid var(--border);margin-bottom:6px;font-size:12px}
+  #crumbs .cr{color:var(--accent);cursor:pointer;text-decoration:underline}
+  #crumbs .sep{color:var(--muted)}
+  #crumbs .lvl{color:var(--muted);margin-left:4px}
+  #crumbs .sp{flex:1}
+  #detailBox{background:var(--panel);border:1px solid var(--accent);border-radius:6px;flex:none;display:none;flex-direction:column;max-height:420px}
+  #detailBox .dh{display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--border);background:var(--accent-soft)}
+  #detailBox .dh b{flex:1}
+  #detailBox .db{overflow:auto}
+  table.pv td.num.click{cursor:pointer}
+  table.pv td.num.click:hover{background:var(--accent-soft);text-decoration:underline}
   #tableBox{background:var(--panel);border:1px solid var(--border);border-radius:6px;overflow:auto;flex:none;max-height:none}
   body.v-table #chartBox{display:none}
   body.v-chart #tableBox{display:none}
@@ -95,6 +107,7 @@
       </span>
       <label>Tri <select id="sortSel"><option value="label">Libellé</option><option value="valueDesc">Valeur ↓</option><option value="valueAsc">Valeur ↑</option></select></label>
       <label><input type="checkbox" id="subChk"> Sous-totaux</label>
+      <label title="Cliquer sur une barre pour descendre au niveau suivant"><input type="checkbox" id="drillChk"> Drill-down</label>
       <label>Graphique <select id="chartSel">
         <option value="bar">Barres</option><option value="stacked">Barres empilées</option><option value="hbar">Barres horizontales</option>
         <option value="line">Courbes</option><option value="pie">Secteurs</option><option value="doughnut">Anneau</option></select></label>
@@ -105,7 +118,8 @@
       <span id="info"></span>
     </div>
     <div id="results">
-      <div id="chartBox"><canvas id="chart"></canvas></div>
+      <div id="chartBox"><div id="crumbs"></div><div id="chartWrap"><canvas id="chart"></canvas></div></div>
+      <div id="detailBox"><div class="dh"><b id="detailTitle"></b><button class="btn" id="detailCsv">Export CSV</button><button class="btn" id="detailClose">Fermer</button></div><div class="db" id="detailBody"></div></div>
       <div id="tableBox"></div>
     </div>
     <div id="standalone">
@@ -125,13 +139,18 @@
 (function(){
 "use strict";
 /* ================= État ================= */
-const DEFAULT_CFG = {rows:[], cols:[], values:[], filters:[], sort:'label', subtotals:false, chart:'bar', topN:20, view:'both'};
+const DEFAULT_CFG = {rows:[], cols:[], values:[], filters:[], sort:'label', subtotals:false, chart:'bar', topN:20, view:'both', drill:true};
 let cfg = JSON.parse(JSON.stringify(DEFAULT_CFG));
 let records = [];
 let fields = [];            // [{name, kind:'date'|'number'|'text'}]
 let fieldKind = {};
 let chart = null;
 let lastPivot = null;
+let drillPath = [];        // [{dim:{field,gran}, key}] — état temporaire, non sauvegardé
+let drillSig = '';
+let lastRows = [];
+let detailItems = null;
+const GRAN_ORDER = ['year','quarter','month','day'];
 const inGrist = window.self !== window.top && typeof grist !== 'undefined';
 
 const AGG = {count:'Nombre', countd:'Nb distinct', sum:'Somme', avg:'Moyenne', min:'Min', max:'Max'};
@@ -250,8 +269,9 @@ function passFilters(rec){
 }
 
 /* ================= Calcul du TCD ================= */
-function computePivot(){
-  const R = cfg.rows, C = cfg.cols, M = measures();
+function computePivot(opts){
+  opts = opts || {};
+  const R = opts.rows || cfg.rows, C = cfg.cols, M = measures(), pred = opts.pred;
   const acc = new Map();   // clé "préfixeLigne \u0002 colonne|*" -> [acc par mesure]
   const colSet = new Set();
   const rowLeaves = new Map();
@@ -259,6 +279,7 @@ function computePivot(){
   const get = (k)=>{ let a = acc.get(k); if (!a){ a = M.map(newAcc); acc.set(k,a);} return a; };
   for (const rec of records){
     if (!passFilters(rec)) continue;
+    if (pred && !pred(rec)) continue;
     nRec++;
     const rk = R.map(d=>dimValue(rec,d));
     const ck = C.length ? C.map(d=>dimValue(rec,d)).join(' / ') : null;
@@ -298,7 +319,7 @@ function computePivot(){
 /* ================= Rendu du tableau ================= */
 const MAX_ROWS = 3000;
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-function fmt(v){ return v == null ? '' : nf.format(v); }
+function fmt(v){ return v == null ? '' : nf.format(v===0 ? 0 : v); }
 
 function buildRows(p){
   // renvoie une liste de lignes logiques : {type:'leaf'|'sub'|'grand', path, labels[]}
@@ -317,7 +338,7 @@ function buildRows(p){
 function renderTable(p){
   const box = document.getElementById('tableBox');
   if (!records.length){ box.innerHTML = '<div class="empty">Aucune donnée.</div>'; return; }
-  const rows = buildRows(p);
+  const rows = buildRows(p); lastRows = rows;
   const colKeys = p.C.length ? [...p.cols, '*'] : ['*'];
   const multiM = p.M.length > 1;
   let h = '<table class="pv"><thead><tr>';
@@ -336,8 +357,9 @@ function renderTable(p){
   }
   h += '</thead><tbody>';
   let prev = [];
-  let count = 0;
+  let count = 0, ri = -1;
   for (const r of rows){
+    ri++;
     if (count++ > MAX_ROWS && r.type !== 'grand') continue;
     const pre = r.path.join(SEP);
     const cls = r.type==='sub' ? 'subtotal' : r.type==='grand' ? 'grand' : '';
@@ -356,7 +378,7 @@ function renderTable(p){
     }
     colKeys.forEach(ck=>p.M.forEach((m,mi)=>{
       const v = p.val(pre, ck, mi);
-      h += `<td class="num${ck==='*'&&p.C.length?' tc':''}">${fmt(v)}</td>`;
+      h += `<td class="num click${ck==='*'&&p.C.length?' tc':''}" data-r="${ri}" data-c="${esc(ck)}" title="Voir les lignes">${fmt(v)}</td>`;
     }));
     h += '</tr>';
   }
@@ -366,7 +388,7 @@ function renderTable(p){
 }
 
 /* ================= Graphique ================= */
-function renderChart(p){
+function renderChart(p, chartDim){
   if (cfg.view === 'table' || typeof Chart === 'undefined') return;
   const canvas = document.getElementById('chart');
   if (chart){ chart.destroy(); chart = null; }
@@ -383,12 +405,13 @@ function renderChart(p){
                  .sort((a,b)=>cfg.sort==='label'? cmpKey(a.join(SEP),b.join(SEP)) : (cfg.sort==='valueAsc'?1:-1)*((p.val(a.join(SEP),'*',0)||0)-(p.val(b.join(SEP),'*',0)||0)));
   }
   const labels = leaves.map(path=>path.length ? path.map((k,i)=>displayKey(k,p.R[i])).join(' / ') : 'Total');
-  let datasets;
+  let datasets, colKeys = null;
   const type = cfg.chart;
   const pie = type==='pie' || type==='doughnut';
   if (p.C.length && !pie){
     let cols = p.cols;
     if (cols.length > 12) cols = [...cols].sort((a,b)=>(p.val('',b,0)||0)-(p.val('',a,0)||0)).slice(0,12);
+    colKeys = cols;
     datasets = cols.map((ck,i)=>({label: displayKey(ck, p.C.length===1?p.C[0]:null),
       data: leaves.map(path=>p.val(path.join(SEP),ck,0)), backgroundColor:PALETTE[i%PALETTE.length], borderColor:PALETTE[i%PALETTE.length]}));
   } else {
@@ -397,19 +420,43 @@ function renderChart(p){
       backgroundColor: pie ? leaves.map((_,j)=>PALETTE[j%PALETTE.length]) : PALETTE[i%PALETTE.length],
       borderColor: pie ? '#fff' : PALETTE[i%PALETTE.length]}));
   }
-  if (type==='line') datasets.forEach(d=>{ d.fill=false; d.tension=.2; d.pointRadius=3; });
+  if (type==='line') datasets.forEach(d=>{ d.fill=false; d.tension=.2; d.pointRadius=4; d.pointHoverRadius=7; });
   const cjsType = type==='stacked'||type==='hbar' ? 'bar' : type;
   const stacked = type==='stacked';
+  const L = drillLevels();
+  const canDrill = !!chartDim && drillPath.length < L.length-1;
+  const titleDims = chartDim ? labelDim(chartDim) : p.R.map(d=>d.field).join(' / ');
   chart = new Chart(canvas, {
     type: cjsType,
     data: {labels, datasets},
     options: {
       responsive:true, maintainAspectRatio:false, animation:false,
       indexAxis: type==='hbar' ? 'y' : 'x',
+      onHover:(e, els)=>{ e.native.target.style.cursor = els.length ? 'pointer' : 'default'; },
+      onClick:(e, els)=>{
+        if (!els.length) return;
+        const el = els[0];
+        const path = leaves[el.index];
+        const colKey = colKeys ? colKeys[el.datasetIndex] : null;
+        const shift = e.native && e.native.shiftKey;
+        // différé : on ne détruit pas le graphique pendant son propre gestionnaire d'événement
+        setTimeout(()=>{
+          if (chartDim){
+            const item = {dim: chartDim, key: path[0]};
+            if (canDrill && !shift){ drillPath.push(item); closeDetail(); render(); }
+            else showDetail([...drillPath, item], colKey);
+          } else {
+            showDetail([...drillPath, ...p.R.map((d,i)=>({dim:d, key:path[i]}))], colKey);
+          }
+        }, 0);
+      },
       plugins:{
         legend:{display: datasets.length>1 || pie, position: pie?'right':'top'},
-        title:{display:true, text: (p.C.length && !pie ? measLabel(p.M[0])+' par '+p.C.map(d=>d.field).join(' / ') : measLabel(p.M[0])) + (p.R.length?' — '+p.R.map(d=>d.field).join(' / '):'')},
-        tooltip:{callbacks:{label:(c)=>`${c.dataset.label}: ${fmt(c.parsed && typeof c.parsed==='object' ? (type==='hbar'?c.parsed.x:c.parsed.y) : c.parsed)}`}}
+        title:{display:true, text: (p.C.length && !pie ? measLabel(p.M[0])+' par '+p.C.map(d=>d.field).join(' / ') : measLabel(p.M[0])) + (titleDims?' — '+titleDims:'')},
+        tooltip:{callbacks:{
+          label:(c)=>`${c.dataset.label}: ${fmt(c.parsed && typeof c.parsed==='object' ? (type==='hbar'?c.parsed.x:c.parsed.y) : c.parsed)}`,
+          footer:()=> canDrill ? 'Clic : descendre · Maj+clic : voir les lignes' : 'Clic : voir les lignes'
+        }}
       },
       scales: pie ? {} : {
         x:{stacked, ticks:{autoSkip:true, maxRotation:60}},
@@ -420,14 +467,114 @@ function renderChart(p){
   if (type==='hbar'){ chart.options.scales.x.ticks.callback=(v)=>nf.format(v); chart.options.scales.y.ticks.callback=function(v){return this.getLabelForValue(v);}; chart.update(); }
 }
 
+/* ================= Drill-down ================= */
+function labelDim(d){ return d.field + (fieldKind[d.field]==='date' ? ' ('+GRAN[d.gran||'month'].toLowerCase()+')' : ''); }
+// Niveaux de drill : les champs en Lignes ; le dernier, s'il est une date, se décline jusqu'au jour.
+function drillLevels(){
+  const R = cfg.rows; if (!R.length) return [];
+  const out = R.slice(0,-1).map(d=>({field:d.field, gran:d.gran}));
+  const last = R[R.length-1];
+  if (fieldKind[last.field]==='date'){
+    const i = GRAN_ORDER.indexOf(last.gran||'month');
+    GRAN_ORDER.slice(Math.max(0,i)).forEach(g=>out.push({field:last.field, gran:g}));
+  } else out.push({field:last.field, gran:last.gran});
+  return out;
+}
+function itemsPred(items, colKey){
+  const its = items.filter(Boolean);
+  return (rec)=>{
+    for (const it of its) if (dimValue(rec, it.dim) !== it.key) return false;
+    if (colKey != null && colKey !== '*' && cfg.cols.map(d=>dimValue(rec,d)).join(' / ') !== colKey) return false;
+    return true;
+  };
+}
+function renderCrumbs(chartDim){
+  const el = document.getElementById('crumbs');
+  if (!records.length){ el.innerHTML=''; return; }
+  let h = '';
+  if (cfg.drill && chartDim){
+    h += `<span class="cr" data-lv="0">Tout</span>`;
+    drillPath.forEach((it,i)=>{ h += `<span class="sep">›</span><span class="cr" data-lv="${i+1}" title="${esc(labelDim(it.dim))}">${esc(displayKey(it.key, it.dim))}</span>`; });
+    h += `<span class="lvl">· niveau : <b>${esc(labelDim(chartDim))}</b></span>`;
+    if (drillPath.length) h += ` <button class="btn" id="drillUp">↑ Remonter</button>`;
+  } else {
+    h += `<span class="lvl">Cliquer sur une barre pour voir les lignes correspondantes</span>`;
+  }
+  h += `<span class="sp"></span><button class="btn" id="drillRows">Voir les lignes</button>`;
+  el.innerHTML = h;
+}
+document.getElementById('crumbs').addEventListener('click', e=>{
+  if (e.target.classList.contains('cr')){ drillPath = drillPath.slice(0, +e.target.dataset.lv); closeDetail(); render(); }
+  else if (e.target.id==='drillUp'){ drillPath.pop(); closeDetail(); render(); }
+  else if (e.target.id==='drillRows'){ showDetail(drillPath, null); }
+});
+
+/* ================= Détail des lignes (drill-through) ================= */
+const MAX_DETAIL = 500;
+let detailRecs = [], detailCols = [];
+function showDetail(items, colKey){
+  detailItems = {items, colKey};
+  const pred = itemsPred(items, colKey);
+  detailRecs = records.filter(r=>passFilters(r) && pred(r));
+  const used = [...new Set([...cfg.rows,...cfg.cols,...cfg.values,...cfg.filters].map(x=>x.field).filter(f=>f!=='*'))];
+  const others = fields.map(f=>f.name).filter(n=>!used.includes(n) && detailRecs.some(r=>r[n]!=null && r[n]!==''));
+  detailCols = [...used, ...others];
+  const last = new Map(); items.forEach(it=>last.set(it.dim.field, it));   // date : on ne garde que le niveau le plus fin
+  const crit = [...last.values()].map(it=>`${it.dim.field} = ${displayKey(it.key,it.dim)}`);
+  if (colKey && colKey!=='*') crit.push(`${cfg.cols.map(d=>d.field).join(' / ')} = ${colKey}`);
+  document.getElementById('detailTitle').textContent =
+    `Détail : ${nf.format(detailRecs.length)} ligne(s)` + (crit.length ? ' — '+crit.join(' · ') : ' — sélection complète');
+  const fmtCell = (v,n)=>{ if (v==null) return ''; if (fieldKind[n]==='date'){ const d=toDate(v,n); return d? pad(d.getUTCDate())+'/'+pad(d.getUTCMonth()+1)+'/'+d.getUTCFullYear() : String(v);} return (typeof v==='number' && fieldKind[n]==='number') ? fmt(v) : String(v); };
+  let h = '<table class="pv"><thead><tr>' + detailCols.map(c=>`<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
+  detailRecs.slice(0,MAX_DETAIL).forEach(r=>{ h += '<tr>' + detailCols.map(c=>`<td class="${fieldKind[c]==='number'?'num':''}">${esc(fmtCell(r[c],c))}</td>`).join('') + '</tr>'; });
+  h += '</tbody></table>';
+  if (detailRecs.length > MAX_DETAIL) h += `<div class="empty">${MAX_DETAIL} premières lignes affichées — l'export CSV contient tout.</div>`;
+  document.getElementById('detailBody').innerHTML = h;
+  const box = document.getElementById('detailBox'); box.style.display = 'flex';
+  box.scrollIntoView({behavior:'smooth', block:'nearest'});
+  // Grist : les widgets liés (« Sélectionner par ») affichent ces lignes
+  if (inGrist && grist.setSelectedRows){ try { const r = grist.setSelectedRows(detailRecs.map(x=>x.id).filter(x=>x!=null)); if (r&&r.catch) r.catch(()=>{}); } catch(_){} }
+}
+function closeDetail(){
+  document.getElementById('detailBox').style.display = 'none'; detailItems = null;
+  if (inGrist && grist.setSelectedRows){ try { const r = grist.setSelectedRows(null); if (r&&r.catch) r.catch(()=>{}); } catch(_){} }
+}
+document.getElementById('detailClose').onclick = closeDetail;
+document.getElementById('detailCsv').onclick = ()=>{
+  const cell = (v)=>{ let s = v==null ? '' : typeof v==='number' ? String(v).replace('.',',') : String(v); return /[;"\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const csv = [detailCols.map(cell).join(';'), ...detailRecs.map(r=>detailCols.map(c=>cell(r[c])).join(';'))].join('\r\n');
+  download('detail.csv', csv);
+};
+function download(name, csv){
+  const blob = new Blob(['﻿'+csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+document.getElementById('tableBox').addEventListener('click', e=>{
+  const td = e.target.closest('td.click'); if (!td || !lastPivot) return;
+  const r = lastRows[+td.dataset.r]; if (!r) return;
+  showDetail([...drillPath, ...r.path.map((k,i)=>({dim:lastPivot.R[i], key:k}))], td.dataset.c);
+});
+
 /* ================= Rendu général ================= */
 function render(){
   const t0 = performance.now();
-  const p = computePivot(); lastPivot = p;
+  // le chemin de drill est réinitialisé si la structure du TCD change
+  const sig = JSON.stringify([cfg.rows, cfg.cols, cfg.filters, cfg.drill]);
+  if (sig !== drillSig){ drillSig = sig; if (drillPath.length){ drillPath = []; } }
+  const pred = drillPath.length ? itemsPred(drillPath) : null;
+  const p = computePivot({pred}); lastPivot = p;
   renderZones(); renderFieldList();
-  renderTable(p); renderChart(p);
+  renderTable(p);
+  let cp = p, chartDim = null;
+  if (cfg.drill){
+    const L = drillLevels();
+    if (L.length){ chartDim = L[Math.min(drillPath.length, L.length-1)]; cp = computePivot({rows:[chartDim], pred}); }
+  }
+  renderChart(cp, chartDim); renderCrumbs(chartDim);
+  if (detailItems) showDetail(detailItems.items, detailItems.colKey);
   document.getElementById('info').textContent =
-    `${nf.format(p.nRec)} ligne(s) sur ${nf.format(records.length)} · ${Math.round(performance.now()-t0)} ms`;
+    `${nf.format(p.nRec)} ligne(s) sur ${nf.format(records.length)}` + (drillPath.length ? ' (drill-down)' : '') + ` · ${Math.round(performance.now()-t0)} ms`;
 }
 let saveTimer = null;
 function changed(){ render(); clearTimeout(saveTimer); saveTimer = setTimeout(saveCfg, 400); }
@@ -566,6 +713,7 @@ document.addEventListener('mousedown', e=>{ if (popIdx>=0 && !e.target.closest('
 function syncToolbar(){
   document.getElementById('sortSel').value = cfg.sort;
   document.getElementById('subChk').checked = !!cfg.subtotals;
+  document.getElementById('drillChk').checked = cfg.drill !== false;
   document.getElementById('chartSel').value = cfg.chart;
   document.getElementById('topN').value = cfg.topN;
   document.body.className = 'v-'+cfg.view;
@@ -573,10 +721,11 @@ function syncToolbar(){
 }
 document.getElementById('sortSel').onchange = e=>{ cfg.sort = e.target.value; changed(); };
 document.getElementById('subChk').onchange = e=>{ cfg.subtotals = e.target.checked; changed(); };
+document.getElementById('drillChk').onchange = e=>{ cfg.drill = e.target.checked; closeDetail(); changed(); };
 document.getElementById('chartSel').onchange = e=>{ cfg.chart = e.target.value; changed(); };
 document.getElementById('topN').onchange = e=>{ cfg.topN = Math.max(1, +e.target.value||20); changed(); };
 document.getElementById('viewSeg').onclick = e=>{ const v = e.target.dataset.v; if (!v) return; cfg.view = v; syncToolbar(); changed(); };
-document.getElementById('resetBtn').onclick = ()=>{ cfg = JSON.parse(JSON.stringify(DEFAULT_CFG)); syncToolbar(); changed(); };
+document.getElementById('resetBtn').onclick = ()=>{ drillPath = []; closeDetail(); cfg = JSON.parse(JSON.stringify(DEFAULT_CFG)); syncToolbar(); changed(); };
 
 function pivotMatrix(){
   const p = lastPivot; if (!p) return [];
@@ -637,7 +786,7 @@ function setRecords(recs){
 window.tcdLoadRecords = setRecords;   // utile pour les tests
 
 if (inGrist){
-  grist.ready({requiredAccess:'read table', allowSelectBy:false});
+  grist.ready({requiredAccess:'read table', allowSelectBy:true});
   let optsReceived = false;
   grist.onOptions(opts=>{
     if (opts && Object.keys(opts).length){ loadCfg(opts); }
